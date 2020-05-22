@@ -122,6 +122,55 @@ describe('data dependencies', () => {
     expect(result.mock.calls[0][0].data).toBe(null);
   });
 
+  it('does not cache errors', () => {
+    const client = createClient({ url: 'http://0.0.0.0' });
+    const opErr = client.createRequestOperation('query', {
+      key: 1,
+      query: queryOne,
+    });
+
+    const op = client.createRequestOperation('query', {
+      key: 2,
+      query: queryOne,
+    });
+
+    const response = jest.fn(
+      (forwardOp: Operation): OperationResult => {
+        if (forwardOp.key === opErr.key) {
+          return {
+            operation: opErr,
+            error: 'error' as any,
+            data: { __typename: 'Query', author: null },
+          };
+        } else if (forwardOp.key === op.key) {
+          return { operation: op, data: queryOneData };
+        }
+
+        return undefined as any;
+      }
+    );
+
+    const { source: ops$, next } = makeSubject<Operation>();
+    const result = jest.fn();
+    const forward: ExchangeIO = ops$ => pipe(ops$, map(response));
+
+    pipe(
+      cacheExchange({})({ forward, client, dispatchDebug })(ops$),
+      tap(result),
+      publish
+    );
+
+    next(opErr);
+    next(op);
+    expect(response).toHaveBeenCalledTimes(2);
+    expect(result).toHaveBeenCalledTimes(2);
+
+    expect(result.mock.calls[1][0]).toHaveProperty(
+      'operation.context.meta.cacheOutcome',
+      'miss'
+    );
+  });
+
   it('updates related queries when their data changes', () => {
     const queryMultiple = gql`
       {
